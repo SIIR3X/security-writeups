@@ -1,0 +1,81 @@
+% =====================================================================
+%  MODÈLE de rapport de sécurité - à copier dans <classe>/<slug>/<slug>.tex
+%
+%  Compilation depuis le dossier du rapport :
+%      latexmk -pdf <slug>.tex        (recommandé)
+%      # ou : pdflatex <slug>.tex  (deux fois, pour la table des matières)
+%
+%  Le chemin \input suppose l'arborescence <classe>/<slug>/ (deux niveaux
+%  sous la racine du dépôt). Les captures vont dans ./images/.
+% =====================================================================
+\documentclass[11pt,a4paper]{article}
+\input{../../templates/preambule.tex}
+
+\begin{document}
+
+% --------------------------- Page de garde ---------------------------
+\makecover
+  {Titre du rapport}          % titre principal
+  {sous-titre / précision}    % sous-titre
+  {                            % lignes de l'encadré méta
+    \metarow{Lab}{Nom du lab ou du challenge}
+    \metarow{Classe}{CWE-XXX / OWASP AYY (2021), Catégorie}
+    \metarow{Difficulté}{Practitioner / Expert / …}
+    \metarow{Cible}{Composant visé}
+    \metarow{Plateforme}{PortSwigger / Root-Me / …}
+  }
+  {Lucas Fagioli}             % auteur
+  {1er janvier 2026}          % date
+
+% ------------------------------ Corps --------------------------------
+\section{Contexte}
+Présentation de l'application, de la faille et de l'objectif.
+
+\begin{itemize}
+  \item \textbf{Point d'injection} : \dots
+  \item \textbf{Objectif} : \dots
+\end{itemize}
+
+\subsection{Environnement}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{@{}p{0.30\textwidth}p{0.62\textwidth}@{}}
+  \textbf{Système}        & \dots \\
+  \textbf{Outil principal}& \dots \\
+  \textbf{Cible}          & \dots \\
+\end{tabular}
+
+\shot{01-exemple.png}{Légende de la capture, en italique.}
+
+\section{Reconnaissance}
+\dots
+
+\section{Exploitation}
+\dots
+
+% Bloc de code encadré :
+\begin{lstlisting}
+exemple de charge utile
+\end{lstlisting}
+
+% Encadré « point clé » :
+\begin{keybox}
+\textbf{Idée clé.} \dots
+\end{keybox}
+
+% Encadré « attention » :
+\begin{warnbox}
+\textbf{Attention.} \dots
+\end{warnbox}
+
+\section{Impact}
+\dots\ Gravité indicative : \textbf{élevée}.
+
+\section{Remédiation}
+\begin{itemize}
+  \item \textbf{Correctif principal} : \dots
+\end{itemize}
+
+\vspace{4pt}
+\noindent\emph{Références} : \dots\ ; CWE-XXX.
+
+\end{document}

@@ -1,0 +1,133 @@
+% =====================================================================
+%  Préambule commun - Rapports de sécurité
+%  Inclus par chaque rapport après \documentclass, avant \begin{document} :
+%      \documentclass[11pt,a4paper]{article}
+%      \input{../../templates/preambule.tex}
+%      \begin{document} ... \end{document}
+%
+%  Moteur : pdflatex (compiler deux fois pour la table des matières, ou
+%  utiliser latexmk -pdf).
+% =====================================================================
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[french]{babel}
+\usepackage{csquotes}
+\frenchsetup{StandardItemLabels=true}
+\usepackage{amsmath}
+
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{xcolor}
+\usepackage{array}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{listings}
+\usepackage{tcolorbox}
+\tcbuselibrary{skins,breakable}
+\usepackage[hidelinks]{hyperref}
+
+% ---------------------------------------------------------------------
+%  Palette
+% ---------------------------------------------------------------------
+\definecolor{codebg}{RGB}{245,246,248}
+\definecolor{codeframe}{RGB}{210,214,220}
+\definecolor{codekw}{RGB}{170,40,60}
+\definecolor{codestr}{RGB}{30,110,70}
+\definecolor{codecmt}{RGB}{120,125,135}
+\definecolor{accent}{RGB}{30,70,120}
+\definecolor{warnbg}{RGB}{255,247,230}
+\definecolor{warnframe}{RGB}{224,168,64}
+\definecolor{keybg}{RGB}{235,240,248}
+\definecolor{keyframe}{RGB}{120,150,190}
+
+% ---------------------------------------------------------------------
+%  Listings (blocs de code encadrés, monospace)
+% ---------------------------------------------------------------------
+\lstdefinestyle{report}{
+  backgroundcolor=\color{codebg},
+  frame=single,
+  rulecolor=\color{codeframe},
+  basicstyle=\ttfamily\small,
+  keywordstyle=\color{codekw}\bfseries,
+  stringstyle=\color{codestr},
+  commentstyle=\color{codecmt}\itshape,
+  numbers=none,
+  breaklines=true,
+  breakatwhitespace=false,
+  showstringspaces=false,
+  columns=fullflexible,
+  keepspaces=true,
+  xleftmargin=8pt,
+  xrightmargin=8pt,
+  aboveskip=10pt,
+  belowskip=10pt,
+  literate=%
+    {é}{{\'e}}1 {è}{{\`e}}1 {ê}{{\^e}}1 {à}{{\`a}}1 {ç}{{\c c}}1
+    {É}{{\'E}}1 {î}{{\^i}}1 {ï}{{\"i}}1 {ô}{{\^o}}1 {û}{{\^u}}1
+    {ù}{{\`u}}1 {œ}{{\oe}}1 {»}{{\guillemotright}}1 {«}{{\guillemotleft}}1
+}
+\lstset{style=report}
+
+% ---------------------------------------------------------------------
+%  Captures d'écran : image + légende en italique (sans « Figure N »)
+%  \shot{fichier.png}{légende}
+%  Si l'image manque, un cadre de remplacement est affiché.
+% ---------------------------------------------------------------------
+\newcommand{\shot}[2]{%
+  \begin{center}%
+    \IfFileExists{images/#1}%
+      {\includegraphics[width=0.92\linewidth]{images/#1}}%
+      {\setlength{\fboxsep}{0pt}\fcolorbox{codeframe}{codebg}{%
+         \parbox[c][3.2cm][c]{0.92\linewidth}{\centering\ttfamily\small
+         images/#1\\[4pt]\normalfont\itshape(capture à ajouter)}}}%
+    \\[5pt]{\itshape\small #2}%
+  \end{center}%
+}
+
+% ---------------------------------------------------------------------
+%  Encadrés « points clés » (bleu) et « attention » (orange)
+% ---------------------------------------------------------------------
+\newtcolorbox{keybox}[1][]{
+  breakable, colback=keybg, colframe=keyframe, boxrule=0.6pt,
+  arc=2pt, left=8pt, right=8pt, top=6pt, bottom=6pt, #1}
+\newtcolorbox{warnbox}[1][]{
+  breakable, colback=warnbg, colframe=warnframe, boxrule=0.6pt,
+  arc=2pt, left=8pt, right=8pt, top=6pt, bottom=6pt, #1}
+
+\setlist[itemize]{leftmargin=1.4em, itemsep=2pt, topsep=4pt}
+
+% ---------------------------------------------------------------------
+%  Page de garde + table des matières
+%  \makecover{titre}{sous-titre}{lignes méta}{auteur}{date}
+%  Les lignes méta s'écrivent avec \metarow{Étiquette}{Valeur}.
+% ---------------------------------------------------------------------
+\newcommand{\metarow}[2]{\textbf{#1} & #2 \\}
+\newcommand{\makecover}[5]{%
+  \begin{titlepage}
+    \centering
+    \vspace*{1.2cm}
+    {\large\scshape Rapport de sécurité}\par
+    \vspace{1.6cm}
+    {\huge\bfseries #1\par}
+    \vspace{0.5cm}
+    {\Large #2\par}
+    \vspace{2.2cm}
+    \begin{tcolorbox}[width=0.86\textwidth, colback=codebg,
+        colframe=codeframe, boxrule=0.8pt, arc=3pt, left=12pt, right=12pt,
+        top=10pt, bottom=10pt]
+      \renewcommand{\arraystretch}{1.35}%
+      \begin{tabular}{@{}r@{\hspace{1.2em}}p{0.62\textwidth}@{}}
+        #3
+      \end{tabular}
+    \end{tcolorbox}
+    \vfill
+    {\large #4\par}
+    \vspace{0.3cm}
+    {#5\par}
+  \end{titlepage}
+  \tableofcontents
+  \newpage
+}
