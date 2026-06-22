@@ -12,6 +12,7 @@ montés en local). Rien ici ne vise un système sans autorisation explicite.
 | Rapport (PDF) | Classe | CWE | OWASP | Plateforme |
 |---|---|---|---|---|
 | [Blind SQL injection (time-based) with data exfiltration](sql-injection/blind-sqli-time-delay/blind-sqli-time-delay.pdf) | Injection SQL | CWE-89 | A03:2021 | PortSwigger |
+| [Reflected XSS behind a strict CSP (dangling markup exfiltration)](cross-site-scripting/strict-csp-dangling-markup/strict-csp-dangling-markup.pdf) | Cross-Site Scripting | CWE-79 | A03:2021 | PortSwigger |
 
 ## Organisation
 

