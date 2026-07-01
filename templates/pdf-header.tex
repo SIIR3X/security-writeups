@@ -1,0 +1,30 @@
+% LaTeX preamble for the write-up PDF export (used via pandoc --include-in-header).
+
+% Centered images come from the center-images.lua filter (\includegraphics).
+\usepackage{graphicx}
+
+% Wrap long lines inside code blocks (e.g. long SQL injection payloads) so they
+% never overflow the right margin. Redefines the plain verbatim environment that
+% pandoc uses for fenced code without a language.
+\usepackage{fvextra}
+\DefineVerbatimEnvironment{verbatim}{Verbatim}{breaklines,breakanywhere,fontsize=\small}
+
+% Allow long typewriter words (e.g. hyphenated file names in the screenshot
+% index table) to break, so they wrap inside their column instead of overflowing.
+\usepackage[htt]{hyphenat}
+
+% --- Cleaner page breaks -----------------------------------------------------
+% Natural vertical spacing (no stretching to force the last line to the bottom),
+% which removes the abrupt-looking stretched gaps; plus no stranded single lines
+% and no headings orphaned at the very bottom of a page.
+\usepackage{etoolbox}
+\usepackage{needspace}
+\raggedbottom
+\widowpenalty=10000
+\clubpenalty=10000
+\displaywidowpenalty=10000
+% If fewer than a few lines fit under a heading, push the whole heading to the
+% next page instead of leaving it alone at the bottom.
+\pretocmd{\section}{\needspace{4\baselineskip}}{}{}
+\pretocmd{\subsection}{\needspace{4\baselineskip}}{}{}
+\pretocmd{\subsubsection}{\needspace{3\baselineskip}}{}{}

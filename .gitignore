@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Generated PDF reports (rebuild with: make pdf)
+*.pdf
+
+# OS files
+.DS_Store
+Thumbs.db
